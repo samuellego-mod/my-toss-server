@@ -1,0 +1,32 @@
+const express = require('express');
+const https = require('https');
+const app = express();
+
+// 서버 설정 (나중에 Render에서 입력할 비밀 변수들을 가져옵니다)
+const options = {
+  cert: process.env.TOSS_CERT,
+  key: process.env.TOSS_KEY,
+  rejectUnauthorized: true,
+};
+
+app.get('/', (req, res) => {
+  res.send('나의 토스 서버가 살아있습니다!');
+});
+
+// 토스에게 요청을 보내는 주소
+app.get('/toss', (req, res) => {
+  const tossReq = https.request(
+    'https://apps-in-toss-api.toss.im/v1/user/authorize', // 예시 주소
+    { method: 'GET', ...options },
+    (tossRes) => {
+      let data = '';
+      tossRes.on('data', (chunk) => (data += chunk));
+      tossRes.on('end', () => res.send(data));
+    }
+  );
+  tossReq.on('error', (e) => res.status(500).send(e.message));
+  tossReq.end();
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`서버 시작: ${PORT}`));
