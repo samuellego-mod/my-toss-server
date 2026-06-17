@@ -1,70 +1,87 @@
-const https = require('https');
+// 줄바꿈 문자(\\n)를 실제 개행 문자(\n)로 복원하는 함수
+const fixCert = (cert) => (cert ? cert.replace(/\\n/g, '\n') : '');
 
-// 인증서 줄바꿈 처리 함수
-const fixCert = (cert) => cert ? cert.replace(/\\n/g, '\n') : '';
-
-const options = {
-  cert: fixCert(process.env.TOSS_CERT),
-  key: fixCert(process.env.TOSS_KEY),
-  rejectUnauthorized: true,
-};
-
-// Netlify Functions 규격에 맞춘 핸들러 함수
 exports.handler = async (event, context) => {
-  // CORS 헤더 설정
+  // 공통 CORS 헤더
   const headers = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE'
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE',
   };
 
-  // event.path를 분석하여 라우팅 처리
-  // 기본 경로(/.netlify/functions/index) 또는 뒤에 슬래시가 붙은 경우
-  if (event.path === '/.netlify/functions/index' || event.path === '/.netlify/functions/index/') {
+  // 요청 경로 정규화 (끝에 붙은 슬래시 제거 및 소문자화)
+  const path = event.path.replace(/\/$/, '');
+
+  // 1. 기본 경로 체크
+  if (path === '/.netlify/functions/index' || path === '/.netlify/functions') {
     return {
       statusCode: 200,
-      headers,
-      body: '서버가 정상적으로 살아있습니다! 뒤에 /toss 를 붙여서 접속해보세요.'
+      headers: { ...headers, 'Content-Type': 'text/plain; charset=utf-8' },
+      body: '서버가 정상적으로 살아있습니다! 뒤에 /toss 를 붙여서 접속해보세요.',
     };
   }
 
-  // 토스 요청 경로 (/.netlify/functions/index/toss)
-  if (event.path.endsWith('/toss')) {
-    console.log("토스 요청 시작...");
+  // 2. 토스 요청 경로 체크
+  if (path.endsWith('/toss')) {
+    console.log("토스 mTLS 요청 시작...");
 
-    return new Promise((resolve) => {
-      const tossReq = https.request(
-        'https://apps-in-toss-api.toss.im/v1/user/authorize', 
-        { method: 'GET', ...options },
-        (tossRes) => {
-          let data = '';
-          tossRes.on('data', (chunk) => (data += chunk));
-          tossRes.on('end', () => {
-            resolve({
-              statusCode: tossRes.statusCode,
-              headers: { ...headers, 'Content-Type': 'application/json' },
-              body: data
-            });
-          });
-        }
-      );
+    const cert = fixCert(process.env.TOSS_CERT);
+    const key = fixCert(process.env.TOSS_KEY);
 
-      tossReq.on('error', (e) => {
-        resolve({
-          statusCode: 500,
-          headers,
-          body: "연결 에러: " + e.message
-        });
+    // 인증서가 환경 변수에 없는 경우 에러 처리
+    if (!cert || !key) {
+      console.error("에러: TOSS_CERT 또는 TOSS_KEY 환경변수가 설정되지 않았습니다.");
+      return {
+        statusCode: 500,
+        headers,
+        body: JSON.stringify({ error: "서버 내부 인증서 설정 에러 (환경 변수를 확인하세요)" }),
+      };
+    }
+
+    try {
+      // Node.js 최신 환경의 내장 fetch 활용 (상태 관리가 엄격한 mTLS 옵션 지정)
+      const response = await fetch('https://apps-in-toss-api.toss.im/v1/user/authorize', {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'Netlify-Serverless-Function',
+        },
+        // mTLS용 인증서 주입 방식
+        dispatcher: new globalThis.fetch.Dispatcher({
+          connect: {
+            cert: cert,
+            key: key,
+            rejectUnauthorized: true, // 보안 검증 활성화
+          }
+        })
       });
 
-      tossReq.end();
-    });
+      const responseData = await response.text();
+      console.log(`토스 응답 수신 (상태 코드: ${response.statusCode || response.status})`);
+
+      return {
+        statusCode: response.status,
+        headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' },
+        body: responseData,
+      };
+
+    } catch (error) {
+      console.error("토스 API 연결 중 치명적 에러 발생:", error);
+      return {
+        statusCode: 500,
+        headers,
+        body: JSON.stringify({
+          error: "토스 서버 연결 실패",
+          message: error.message,
+        }),
+      };
+    }
   }
 
-  // 매칭되는 경로가 없을 때 404 반환
+  // 3. 경로가 맞지 않을 때
   return {
     statusCode: 404,
     headers,
-    body: '찾을 수 없는 경로입니다. (Not Found)'
+    body: '찾을 수 없는 경로입니다. (Not Found)',
   };
 };
