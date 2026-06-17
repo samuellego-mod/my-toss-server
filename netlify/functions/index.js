@@ -1,7 +1,6 @@
-const express = require('express');
 const https = require('https');
-const app = express();
 
+// 인증서 줄바꿈 처리 함수
 const fixCert = (cert) => cert ? cert.replace(/\\n/g, '\n') : '';
 
 const options = {
@@ -10,30 +9,62 @@ const options = {
   rejectUnauthorized: true,
 };
 
-// 1. 기본 주소 테스트 (https://...onrender.com/)
-app.get('/', (req, res) => {
-  res.send('서버가 정상적으로 살아있습니다! /toss 로 접속해보세요.');
-});
+// Netlify Functions 규격에 맞춘 핸들러 함수
+exports.handler = async (event, context) => {
+  // CORS 헤더 설정
+  const headers = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE'
+  };
 
-// 2. 토스 요청 테스트 (https://...onrender.com/toss)
-app.get('/toss', (req, res) => {
-  console.log("토스 요청 시작...");
-  
-  const tossReq = https.request(
-    'https://apps-in-toss-api.toss.im/v1/user/authorize', 
-    { method: 'GET', ...options },
-    (tossRes) => {
-      let data = '';
-      tossRes.on('data', (chunk) => (data += chunk));
-      tossRes.on('end', () => res.send(data));
-    }
-  );
+  // event.path를 분석하여 라우팅 처리
+  // 기본 경로(/.netlify/functions/index) 또는 뒤에 슬래시가 붙은 경우
+  if (event.path === '/.netlify/functions/index' || event.path === '/.netlify/functions/index/') {
+    return {
+      statusCode: 200,
+      headers,
+      body: '서버가 정상적으로 살아있습니다! 뒤에 /toss 를 붙여서 접속해보세요.'
+    };
+  }
 
-  tossReq.on('error', (e) => {
-    res.status(500).send("연결 에러: " + e.message);
-  });
-  tossReq.end();
-});
+  // 토스 요청 경로 (/.netlify/functions/index/toss)
+  if (event.path.endsWith('/toss')) {
+    console.log("토스 요청 시작...");
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server is running on port ${PORT}`));
+    return new Promise((resolve) => {
+      const tossReq = https.request(
+        'https://apps-in-toss-api.toss.im/v1/user/authorize', 
+        { method: 'GET', ...options },
+        (tossRes) => {
+          let data = '';
+          tossRes.on('data', (chunk) => (data += chunk));
+          tossRes.on('end', () => {
+            resolve({
+              statusCode: tossRes.statusCode,
+              headers: { ...headers, 'Content-Type': 'application/json' },
+              body: data
+            });
+          });
+        }
+      );
+
+      tossReq.on('error', (e) => {
+        resolve({
+          statusCode: 500,
+          headers,
+          body: "연결 에러: " + e.message
+        });
+      });
+
+      tossReq.end();
+    });
+  }
+
+  // 매칭되는 경로가 없을 때 404 반환
+  return {
+    statusCode: 404,
+    headers,
+    body: '찾을 수 없는 경로입니다. (Not Found)'
+  };
+};
